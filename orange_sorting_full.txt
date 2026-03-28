@@ -1,0 +1,66 @@
+HỆ THỐNG BĂNG TẢI PHÂN LOẠI CAM BẰNG AI (YOLO + ESP32)
+
+TÊN DỰ ÁN: Hệ thống băng tải phân loại quả cam theo kích thước sử dụng
+AI (YOLO) và ESP32
+
+MÔ TẢ TỔNG QUAN: Hệ thống phân loại tự động sử dụng Computer Vision và
+Embedded System. ESP32-CAM thu hình, Flask + YOLO xử lý AI, ESP32-C3
+điều khiển relay/servo.
+
+KIẾN TRÚC: ESP32-CAM → Flask Server (YOLO) → ESP32-C3 → Relay/Servo
+
+THÀNH PHẦN: 1. ESP32-CAM: - Stream MJPEG (/stream) - Snapshot (/capture)
+
+2.  Flask + YOLO:
+
+-   Nhận ảnh
+-   Detect object
+-   Đo kích thước (pixel → cm)
+-   Phân loại Small / Medium / Large
+
+3.  ESP32-C3:
+
+-   Điều khiển relay, servo
+-   Đọc sensor
+-   Gửi request tới Flask
+
+4.  Web UI:
+
+-   Hiển thị video
+-   Hiển thị số lượng
+-   Điều khiển Start/Stop/Reset
+
+LUỒNG HOẠT ĐỘNG:
+
+1.  Start:
+
+-   Relay1 ON → băng tải chạy
+
+2.  Sensor1 detect:
+
+-   Dừng băng tải
+-   Gửi request YOLO
+
+3.  YOLO:
+
+-   Detect cam
+-   Tính đường kính
+-   Phân loại
+
+4.  Điều khiển:
+
+SMALL: - Relay1 ON - Relay2 ON - Sensor2 → Servo1 quay 45° trong 10s →
+reset
+
+MEDIUM: - Relay1 ON - Relay3 ON - Sensor3 → Servo2 quay 45° trong 10s →
+reset
+
+LARGE: - Relay1 ON - Không phân nhánh
+
+STATE MACHINE: IDLE → RUNNING → DETECTING → SORT_SMALL / SORT_MEDIUM /
+SORT_LARGE → RUNNING
+
+ĐO KÍCH THƯỚC: - Bounding box YOLO - diameter = max(width, height) - cm
+= pixel × hệ số - EMA smoothing
+
+

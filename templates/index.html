@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hệ Thống Phân Loại Cam AI</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @keyframes captureFlash {
+            0% { opacity: 0; transform: scale(0.96); }
+            20% { opacity: 0.95; transform: scale(1); }
+            100% { opacity: 0; transform: scale(1.04); }
+        }
+
+        .capture-flash {
+            animation: captureFlash 700ms ease-out;
+        }
+
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 9999px;
+            display: inline-block;
+        }
+
+        .status-on { background-color: #16a34a; }
+        .status-active { background-color: #0ea5e9; }
+        .status-waiting { background-color: #f59e0b; }
+        .status-off { background-color: #9ca3af; }
+
+        .control-btn {
+            transition: all 200ms ease;
+        }
+
+        .control-btn-active {
+            box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.35);
+            transform: translateY(-1px);
+        }
+    </style>
+</head>
+<body class="bg-gray-100 font-sans p-6">
+
+    <div class="max-w-6xl mx-auto">
+        <h1 class="text-3xl font-bold text-center text-gray-800 mb-8">BẢNG ĐIỀU KHIỂN PHÂN LOẠI CAM (YOLO + ESP32)</h1>
+
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+            
+            <div class="md:col-span-2 bg-white rounded-lg shadow-md p-4 flex flex-col items-center">
+                <h2 class="text-xl font-semibold mb-4 text-gray-700">Camera Stream & Detection</h2>
+                <div class="w-full grid grid-cols-1 md:grid-cols-[280px,1fr] gap-4 items-start">
+                    <div class="bg-slate-50 border border-slate-200 rounded-lg p-3">
+                        <h3 class="text-sm font-bold text-slate-700 mb-3">TRANG THAI PHAN CUNG</h3>
+                        <p class="text-xs mb-3">Ket noi ESP32-C3: <span id="hardwareLiveStatus" class="font-semibold text-red-600">OFFLINE</span></p>
+
+                        <p class="text-xs font-semibold text-slate-500 mb-2">SERVO</p>
+                        <div class="space-y-2 mb-4">
+                            <div class="flex justify-between items-center text-sm">
+                                <span>Servo Small</span>
+                                <span id="servoSmallStatus" class="font-semibold text-slate-600">IDLE</span>
+                            </div>
+                            <div class="flex justify-between items-center text-sm">
+                                <span>Servo Medium</span>
+                                <span id="servoMediumStatus" class="font-semibold text-slate-600">IDLE</span>
+                            </div>
+                        </div>
+
+                        <p class="text-xs font-semibold text-slate-500 mb-2">MH SENSOR (Flying Fish)</p>
+                        <div class="space-y-2 mb-4">
+                            <div class="flex justify-between items-center text-sm">
+                                <span>Sensor Main</span>
+                                <span id="sensorMainStatus" class="font-semibold text-slate-600">WAITING</span>
+                            </div>
+                            <div class="flex justify-between items-center text-sm">
+                                <span>Sensor Small</span>
+                                <span id="sensorSmallStatus" class="font-semibold text-slate-600">WAITING</span>
+                            </div>
+                            <div class="flex justify-between items-center text-sm">
+                                <span>Sensor Medium</span>
+                                <span id="sensorMediumStatus" class="font-semibold text-slate-600">WAITING</span>
+                            </div>
+                        </div>
+
+                        <p class="text-xs font-semibold text-slate-500 mb-2">RELAY</p>
+                        <div class="space-y-2">
+                            <div class="flex justify-between items-center text-sm">
+                                <span>Relay Conveyor</span>
+                                <span id="relay1Status" class="font-semibold text-slate-600">OFF</span>
+                            </div>
+                            <div class="flex justify-between items-center text-sm">
+                                <span>Relay Small</span>
+                                <span id="relay2Status" class="font-semibold text-slate-600">OFF</span>
+                            </div>
+                            <div class="flex justify-between items-center text-sm">
+                                <span>Relay Medium</span>
+                                <span id="relay3Status" class="font-semibold text-slate-600">OFF</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="relative w-full">
+                            <img id="videoStream" src="{{ esp32_cam_ip }}/capture" alt="ESP32-CAM Capture"
+                             class="w-full bg-black rounded border-2 border-gray-300 min-h-[300px] object-cover">
+                        <div id="captureFlash" class="pointer-events-none absolute inset-0 rounded bg-white opacity-0"></div>
+                        <div id="captureBadge" class="absolute top-3 right-3 bg-emerald-600 text-white text-xs font-bold px-3 py-1 rounded-full shadow hidden">
+                            DA CHUP ANH
+                        </div>
+                    </div>
+                </div>
+                <p class="mt-4 text-sm text-gray-500">Trạng thái hệ thống: <span id="systemStateDisplay" class="font-bold text-blue-600">IDLE</span></p>
+                <p class="mt-1 text-sm text-gray-500">Lần chụp gần nhất: <span id="lastCaptureInfo" class="font-semibold text-emerald-700">Chưa có</span></p>
+            </div>
+
+            <div class="space-y-6">
+                
+                <div class="bg-white rounded-lg shadow-md p-4">
+                    <h2 class="text-xl font-semibold mb-4 text-gray-700">Thống Kê Kích Thước</h2>
+                    <div class="space-y-4">
+                        <div class="flex justify-between items-center p-3 bg-green-100 rounded">
+                            <span class="font-medium text-green-800">Cam Lớn (Large)</span>
+                            <span id="countLarge" class="text-2xl font-bold text-green-600">0</span>
+                        </div>
+                        <div class="flex justify-between items-center p-3 bg-yellow-100 rounded">
+                            <span class="font-medium text-yellow-800">Cam Vừa (Medium)</span>
+                            <span id="countMedium" class="text-2xl font-bold text-yellow-600">0</span>
+                        </div>
+                        <div class="flex justify-between items-center p-3 bg-red-100 rounded">
+                            <span class="font-medium text-red-800">Cam Nhỏ (Small)</span>
+                            <span id="countSmall" class="text-2xl font-bold text-red-600">0</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="bg-white rounded-lg shadow-md p-4">
+                    <h2 class="text-xl font-semibold mb-4 text-gray-700">Điều Khiển Băng Tải</h2>
+                    <div class="flex flex-col space-y-3">
+                        <button id="btnStart" onclick="sendCommand('START')" class="control-btn w-full bg-blue-500 hover:bg-blue-600 text-white font-bold py-3 px-4 rounded transition duration-200">
+                            START (Chạy Băng Tải)
+                        </button>
+                        <button id="btnStop" onclick="sendCommand('STOP')" class="control-btn w-full bg-red-500 hover:bg-red-600 text-white font-bold py-3 px-4 rounded transition duration-200">
+                            STOP (Dừng Khẩn Cấp)
+                        </button>
+                        <button id="btnReset" onclick="sendCommand('RESET')" class="control-btn w-full bg-gray-500 hover:bg-gray-600 text-white font-bold py-3 px-4 rounded transition duration-200 mt-4">
+                            RESET THỐNG KÊ
+                        </button>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let lastCapturedAt = 0;
+        const esp32CaptureBaseUrl = '{{ esp32_cam_ip }}/capture';
+
+        function renderStatusValue(elementId, value) {
+            const el = document.getElementById(elementId);
+            if (!el) return;
+
+            el.innerText = value;
+            el.className = 'font-semibold';
+
+            if (value === 'ON') {
+                el.classList.add('text-green-600');
+            } else if (value === 'ACTIVE' || value === 'TRIGGERED' || value === 'MONITORING') {
+                el.classList.add('text-sky-600');
+            } else if (value === 'WAITING') {
+                el.classList.add('text-amber-600');
+            } else {
+                el.classList.add('text-slate-600');
+            }
+        }
+
+        function updateHardwareStatus(hardware) {
+            if (!hardware) return;
+
+            renderStatusValue('servoSmallStatus', hardware.servo?.servo_small || 'IDLE');
+            renderStatusValue('servoMediumStatus', hardware.servo?.servo_medium || 'IDLE');
+
+            renderStatusValue('sensorMainStatus', hardware.sensor?.sensor_main || 'WAITING');
+            renderStatusValue('sensorSmallStatus', hardware.sensor?.sensor_small || 'WAITING');
+            renderStatusValue('sensorMediumStatus', hardware.sensor?.sensor_medium || 'WAITING');
+
+            renderStatusValue('relay1Status', hardware.relay?.relay1_conveyor || 'OFF');
+            renderStatusValue('relay2Status', hardware.relay?.relay2_small || 'OFF');
+            renderStatusValue('relay3Status', hardware.relay?.relay3_medium || 'OFF');
+        }
+
+        function updateHardwareLiveStatus(isOnline) {
+            const el = document.getElementById('hardwareLiveStatus');
+            if (!el) return;
+
+            if (isOnline) {
+                el.innerText = 'ONLINE';
+                el.className = 'font-semibold text-green-600';
+            } else {
+                el.innerText = 'OFFLINE';
+                el.className = 'font-semibold text-red-600';
+            }
+        }
+
+        function updateControlButtons(state) {
+            const btnStart = document.getElementById('btnStart');
+            const btnStop = document.getElementById('btnStop');
+
+            btnStart.classList.remove('control-btn-active', 'bg-green-600');
+            btnStart.classList.add('bg-blue-500');
+            btnStop.classList.remove('control-btn-active', 'bg-rose-700');
+            btnStop.classList.add('bg-red-500');
+
+            if (state === 'RUNNING' || state === 'DETECTING' || state.startsWith('SORT_')) {
+                btnStart.classList.add('control-btn-active', 'bg-green-600');
+                btnStart.classList.remove('bg-blue-500');
+            } else {
+                btnStop.classList.add('control-btn-active', 'bg-rose-700');
+                btnStop.classList.remove('bg-red-500');
+            }
+        }
+
+        function showCaptureEffect(capture) {
+            const flash = document.getElementById('captureFlash');
+            const badge = document.getElementById('captureBadge');
+            const info = document.getElementById('lastCaptureInfo');
+
+            flash.classList.remove('capture-flash');
+            // Trigger reflow để animation chạy lại mỗi lần capture mới.
+            void flash.offsetWidth;
+            flash.classList.add('capture-flash');
+
+            badge.classList.remove('hidden');
+            setTimeout(() => badge.classList.add('hidden'), 900);
+
+            const category = capture.category || '-';
+            const diameter = capture.diameter_cm || 0;
+            info.innerText = `${category} - ${diameter} cm`;
+        }
+
+        function refreshCameraPreview() {
+            const video = document.getElementById('videoStream');
+            if (!video) return;
+            video.src = `${esp32CaptureBaseUrl}?t=${Date.now()}`;
+        }
+
+        // Dùng snapshot polling thay cho /stream để không block endpoint /capture của ESP32-CAM.
+        setInterval(refreshCameraPreview, 700);
+
+        // Cập nhật số liệu mỗi giây
+        setInterval(async () => {
+            try {
+                const response = await fetch('/api/stats');
+                const data = await response.json();
+                
+                if(data.status === 'success') {
+                    document.getElementById('countSmall').innerText = data.counts.small;
+                    document.getElementById('countMedium').innerText = data.counts.medium;
+                    document.getElementById('countLarge').innerText = data.counts.large;
+                    document.getElementById('systemStateDisplay').innerText = data.state;
+                    updateControlButtons(data.desired_state || data.state);
+                    updateHardwareStatus(data.hardware_status);
+                    updateHardwareLiveStatus(!!data.hardware_online);
+
+                    if (data.last_capture && data.last_capture.captured_at > lastCapturedAt) {
+                        lastCapturedAt = data.last_capture.captured_at;
+                        showCaptureEffect(data.last_capture);
+                    }
+                }
+            } catch (error) {
+                console.error('Lỗi khi lấy dữ liệu thống kê:', error);
+            }
+        }, 1000);
+
+        // Gửi lệnh điều khiển xuống Flask Server
+        async function sendCommand(cmd) {
+            try {
+                const response = await fetch('/api/control', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ command: cmd })
+                });
+                const data = await response.json();
+                if(data.status === 'success') {
+                    console.log(`Lệnh ${cmd} đã được gửi thành công. Trạng thái: ${data.state}`);
+                    document.getElementById('systemStateDisplay').innerText = data.state;
+                    updateControlButtons(data.desired_state || data.state);
+                }
+            } catch (error) {
+                console.error(`Lỗi khi gửi lệnh ${cmd}:`, error);
+                alert("Không thể gửi lệnh đến Server!");
+            }
+        }
+    </script>
+</body>
+</html>
