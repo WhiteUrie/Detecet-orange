@@ -1,66 +1,93 @@
-HỆ THỐNG BĂNG TẢI PHÂN LOẠI CAM BẰNG AI (YOLO + ESP32)
+HE THONG BANG TAI PHAN LOAI CAM BANG AI (YOLO + ESP32-C3)
 
-TÊN DỰ ÁN: Hệ thống băng tải phân loại quả cam theo kích thước sử dụng
-AI (YOLO) và ESP32
+TEN DU AN:
+He thong bang tai phan loai qua cam theo kich thuoc, su dung YOLOv8 + Flask + ESP32-C3.
 
-MÔ TẢ TỔNG QUAN: Hệ thống phân loại tự động sử dụng Computer Vision và
-Embedded System. ESP32-CAM thu hình, Flask + YOLO xử lý AI, ESP32-C3
-điều khiển relay/servo.
+MO TA TONG QUAN:
+- Flask server lay anh truc tiep tu USB webcam tren may tinh (OpenCV).
+- YOLOv8 detect qua cam, do duong kinh va phan loai SMALL / MEDIUM / LARGE.
+- ESP32-C3 dieu khien relay, servo, doc sensor va dong bo trang thai phan cung len server.
+- Web UI hien thi stream, anh detect gan nhat, thong ke va nut dieu khien he thong.
 
-KIẾN TRÚC: ESP32-CAM → Flask Server (YOLO) → ESP32-C3 → Relay/Servo
+KIEN TRUC HIEN TAI:
+USB Webcam -> Flask + YOLO -> ket qua category -> ESP32-C3 state machine -> Relay/Servo -> Web UI
 
-THÀNH PHẦN: 1. ESP32-CAM: - Stream MJPEG (/stream) - Snapshot (/capture)
+THANH PHAN:
+1) Flask + YOLO (app.py)
+- GET /video_feed: stream MJPEG tu webcam
+- GET /api/detect: detect 1 lan
+- GET /api/stats: du lieu tong hop cho UI
+- POST /api/control: nhan lenh START/STOP/RESET
+- GET /api/command: ESP32-C3 poll desired_state
+- POST /api/hardware/update: ESP32-C3 push relay/servo/sensor/state
+- GET /api/last_capture_image: anh detect gan nhat da gan bounding box
 
-2.  Flask + YOLO:
+2) ESP32-C3 (esp32c3/esp32c3.ino)
+- Poll /api/command de lay desired_state
+- Push heartbeat/trang thai phan cung len /api/hardware/update
+- Goi /api/detect khi vao state DETECTING
+- State machine hien tai: IDLE, RUNNING, DETECTING, SORT_SMALL, SORT_MEDIUM, SORT_LARGE, NONE
 
--   Nhận ảnh
--   Detect object
--   Đo kích thước (pixel → cm)
--   Phân loại Small / Medium / Large
+3) ESP32-CAM (esp32cam/esp32cam.ino)
+- Cung cap endpoint /capture va /stream de test camera
+- Khong nam trong luong detect chinh hien tai
 
-3.  ESP32-C3:
+4) Web UI (templates/index.html)
+- Cot 1: Trang thai phan cung (relay/servo/sensor + online/offline)
+- Cot 2: Camera Stream & Detection
+- Cot 3: Anh gan Bounding Box gan nhat
+- Cot 4: Thong ke kich thuoc + dieu khien bang tai
 
--   Điều khiển relay, servo
--   Đọc sensor
--   Gửi request tới Flask
+LUONG HOAT DONG CHINH:
+1) User bam START -> POST /api/control -> desired_state = RUNNING
+2) ESP32-C3 poll /api/command va chuyen IDLE -> RUNNING
+3) Sensor main phat hien vat theo EDGE (WAITING -> TRIGGERED) -> vao DETECTING
+4) ESP32-C3 goi /api/detect 1 lan de lay category
+5) ESP32-C3 chuyen state theo category:
+	 - SMALL -> SORT_SMALL
+	 - MEDIUM -> SORT_MEDIUM
+	 - LARGE -> SORT_LARGE
+	 - NONE/invalid -> NONE (default case)
+6) Ket thuc chu ky sort thi reset hasBeenDetected va quay lai RUNNING
+7) UI poll /api/stats moi 1s va cap nhat /api/last_capture_image khi co capture moi
 
-4.  Web UI:
+CHI TIET STATE MACHINE ESP32-C3:
+- RUNNING:
+	- Bat relay conveyor
+	- Doc sensor main va chi trigger tren canh moi de tranh detect lap
+- DETECTING:
+	- Goi Flask /api/detect
+- SORT_SMALL:
+	- Bat relay nhanh small
+	- Servo small goc 30 do, giu 7 giay, reset 90 do
+- SORT_MEDIUM:
+	- Bat relay nhanh medium
+	- Servo medium goc 30 do, giu 7 giay, reset 90 do
+- SORT_LARGE:
+	- Khong gat servo, cho vat di thang khoang 2 giay roi quay lai RUNNING
+- NONE/default:
+	- Cho 2 giay roi quay lai RUNNING (xu ly truong hop detect loi/khong hop le)
 
--   Hiển thị video
--   Hiển thị số lượng
--   Điều khiển Start/Stop/Reset
+DO KICH THUOC (PHIEN BAN HIEN TAI):
+- raw_diameter_px = max(width, height)
+- measured_diameter_cm = raw_diameter_px * PIXEL_TO_CM_RATIO + DIAMETER_OFFSET_CM
+- diameter_cm = max(0, measured_diameter_cm * CALIBRATION_SCALE + CALIBRATION_OFFSET_CM)
 
-LUỒNG HOẠT ĐỘNG:
+HE SO HIEU CHUAN:
+- PIXEL_TO_CM_RATIO = 0.0237
+- DIAMETER_OFFSET_CM = 0
+- CALIBRATION_SCALE = 1.1374
+- CALIBRATION_OFFSET_CM = -0.476
 
-1.  Start:
+NGUONG PHAN LOAI:
+- SMALL: diameter_cm < 6.0
+- MEDIUM: 6.0 <= diameter_cm < 7.0
+- LARGE: diameter_cm >= 7.0
 
--   Relay1 ON → băng tải chạy
-
-2.  Sensor1 detect:
-
--   Dừng băng tải
--   Gửi request YOLO
-
-3.  YOLO:
-
--   Detect cam
--   Tính đường kính
--   Phân loại
-
-4.  Điều khiển:
-
-SMALL: - Relay1 ON - Relay2 ON - Sensor2 → Servo1 quay 45° trong 10s →
-reset
-
-MEDIUM: - Relay1 ON - Relay3 ON - Sensor3 → Servo2 quay 45° trong 10s →
-reset
-
-LARGE: - Relay1 ON - Không phân nhánh
-
-STATE MACHINE: IDLE → RUNNING → DETECTING → SORT_SMALL / SORT_MEDIUM /
-SORT_LARGE → RUNNING
-
-ĐO KÍCH THƯỚC: - Bounding box YOLO - diameter = max(width, height) - cm
-= pixel × hệ số - EMA smoothing
+GHI CHU QUAN TRONG:
+- O anh bounding box chi hien thi KHUNG, khong hien thi ten class va confidence.
+- Bien ESP32_CAM_URL con ton tai trong app.py nhung khong duoc dung cho luong detect chinh.
+- AUTO_DETECT_ON_HARDWARE_UPDATE mac dinh = 0 (khuyen nghi giu 0 de tranh dem trung).
+- setup.py dang validate thu muc sketch theo ten viet hoa (ESP32C3/ESP32CAM), trong khi repo dung ten viet thuong (esp32c3/esp32cam).
 
 

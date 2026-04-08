@@ -2,8 +2,8 @@
 #include <WiFi.h>
 #include "esp_camera.h"
 
-const char* ssid = "TipToe";
-const char* password = "1234567890dcq";
+const char* ssid = "Redmi12";
+const char* password = "12345678";
 
 WebServer server(80);
 
