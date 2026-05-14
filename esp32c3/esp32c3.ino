@@ -5,28 +5,34 @@
 
 const char* ssid = "TipToe";
 const char* password = "1234567890dcq";
-String flask_url = "http://10.160.186.160:5000/api/detect";
-String flask_hardware_url = "http://10.160.186.160:5000/api/hardware/update";
-String flask_command_url = "http://10.160.186.160:5000/api/command";
+String flask_url = "http://10.177.46.160:5000/api/detect";
+String flask_hardware_url = "http://10.177.46.160:5000/api/hardware/update";
+String flask_command_url = "http://10.177.46.160:5000/api/command";
 
 HTTPClient hwStatusClient;
 HTTPClient stateClient;
 HTTPClient detectClient;
 
 // Khai báo chân GPIO
-const int RELAY1_CONVEYOR = 2;
-const int RELAY2_BRANCH_SMALL = 3;
-const int RELAY3_BRANCH_MEDIUM = 4;
-const int SENSOR1_MAIN = 5;
-const int SENSOR2_SMALL = 6;
-const int SENSOR3_MEDIUM = 7;
-const int SERVO1_PIN = 8;
-const int SERVO2_PIN = 10;
+const int RELAY1_CONVEYOR = 23;
+const int RELAY2_BRANCH_SMALL = 22;
+const int RELAY3_BRANCH_MEDIUM = 17;
+const int RELAY4_BRANCH_NON_ORANGE = 19;
+
+const int SENSOR1_MAIN = 18;
+const int SENSOR2_SMALL = 14;
+const int SENSOR3_MEDIUM = 26;
+const int SENSOR4_NON_ORANGE = 13; 
+
+const int SERVO1_PIN = 21;
+const int SERVO2_PIN = 16;
+const int SERVO3_NON_ORANGE_PIN = 25;
 
 Servo servoSmall;
 Servo servoMedium;
+Servo servoNonOrange;
 
-enum State { IDLE, RUNNING, DETECTING, SORT_SMALL, SORT_MEDIUM, SORT_LARGE, NONE };
+enum State { IDLE, RUNNING, DETECTING, SORT_SMALL, SORT_MEDIUM, SORT_NON_ORANGE, SORT_LARGE, NONE };
 State currentState = IDLE;
 
 // Biến cho non-blocking delay
@@ -40,9 +46,11 @@ unsigned long none_timer = 0;
 // Theo doi canh trigger de tranh kich servo lap lai trong cung 1 lan vat di qua sensor.
 bool lastSensorSmallTriggered = false;
 bool lastSensorMediumTriggered = false;
+bool lastSensorNonOrangeTriggered = false;
 bool lastSensorMainTriggered = false;  // Thêm edge detection cho SENSOR1_MAIN
 bool sensorSmallArmed = false;
 bool sensorMediumArmed = false;
+bool sensorNonOrangeArmed = false;
 
 // Biến điều hướng HTTP Request
 unsigned long commandPollTimer = 0;
@@ -51,6 +59,7 @@ const unsigned long POLLING_INTERVAL = 1000; // Gọi API 1 giây/lần
 
 int servoSmallAngle = 0;
 int servoMediumAngle = 0;
+int servoNonOrangeAngle = 0;
 
 // --- CÁC HÀM TIỆN ÍCH ---
 
@@ -60,8 +69,6 @@ String extractDesiredState(String payload) {
   StaticJsonDocument<256> doc;
   DeserializationError error = deserializeJson(doc, payload);
   if (error) {
-    Serial.print("[CMD] JSON Parse Error: ");
-    Serial.println(error.c_str());
     return "IDLE";
   }
   
@@ -76,6 +83,7 @@ String stateToString(State st) {
     case DETECTING: return "DETECTING";
     case SORT_SMALL: return "SORT_SMALL";
     case SORT_MEDIUM: return "SORT_MEDIUM";
+    case SORT_NON_ORANGE: return "SORT_NON_ORANGE";
     case SORT_LARGE: return "SORT_LARGE";
     default: return "IDLE";
   }
@@ -85,18 +93,26 @@ String relayStatus(int pin) {
   return digitalRead(pin) == HIGH ? "ON" : "OFF";
 }
 
+bool isSensorActiveLow(int pin) {
+  // Sensor non-orange đang đấu ngược cực: TRIGGERED khi mức LOW.
+  if (pin == SENSOR4_NON_ORANGE) return true;
+  return true;
+}
+
+bool isTriggered(int pin) {
+  int level = digitalRead(pin);
+  if (isSensorActiveLow(pin)) {
+    return level == LOW;
+  }
+  return level == HIGH;
+}
+
 String sensorStatus(int pin) {
-  // Flying Fish sensor thường active LOW.
-  return digitalRead(pin) == LOW ? "TRIGGERED" : "WAITING";
+  return isTriggered(pin) ? "TRIGGERED" : "WAITING";
 }
 
 String servoStatus(int angle) {
   return angle != 90 ? "ACTIVE" : "IDLE";
-}
-
-bool isTriggered(int pin) {
-  // Flying Fish sensor active LOW.
-  return digitalRead(pin) == LOW;
 }
 
 String parseCategoryFromResponse(String response) {
@@ -105,13 +121,18 @@ String parseCategoryFromResponse(String response) {
   StaticJsonDocument<256> doc;
   DeserializationError error = deserializeJson(doc, response);
   if (error) {
-    Serial.print("[DETECT] JSON Parse Error: ");
-    Serial.println(error.c_str());
     return "NONE";
   }
   
-  // Lấy giá trị của key "category", nếu không có thì mặc định là "NONE"
-  return doc["category"] | "NONE";
+  // Chuẩn hóa category để tránh lệch kiểu viết: non orange/non-orange/non_orange.
+  String category = doc["category"] | "NONE";
+  category.trim();
+  category.toUpperCase();
+  category.replace("-", "_");
+  category.replace(" ", "_");
+
+  if (category == "NONORANGE") return "NON_ORANGE";
+  return category;
 }
 
 // --- CÁC HÀM GIAO TIẾP MẠNG ---
@@ -128,15 +149,18 @@ void postHardwareStatus(HTTPClient* http) {
   relay["relay1_conveyor"] = relayStatus(RELAY1_CONVEYOR);
   relay["relay2_small"] = relayStatus(RELAY2_BRANCH_SMALL);
   relay["relay3_medium"] = relayStatus(RELAY3_BRANCH_MEDIUM);
+  relay["relay4_non_orange"] = relayStatus(RELAY4_BRANCH_NON_ORANGE);
   
   JsonObject servo = doc.createNestedObject("servo");
   servo["servo_small"] = servoStatus(servoSmallAngle);
   servo["servo_medium"] = servoStatus(servoMediumAngle);
+  servo["servo_non_orange"] = servoStatus(servoNonOrangeAngle);
   
   JsonObject sensor = doc.createNestedObject("sensor");
   sensor["sensor_main"] = sensorStatus(SENSOR1_MAIN);
   sensor["sensor_small"] = sensorStatus(SENSOR2_SMALL);
   sensor["sensor_medium"] = sensorStatus(SENSOR3_MEDIUM);
+  sensor["sensor_non_orange"] = sensorStatus(SENSOR4_NON_ORANGE);
 
   String body;
   serializeJson(doc, body);
@@ -152,8 +176,6 @@ String getDesiredState(HTTPClient* http) {
   http->begin(flask_command_url);
   int code = http->GET();
   if (code <= 0) {
-    Serial.print("[CMD] GET /api/command failed, code=");
-    Serial.println(code);
     http->end();
     return "IDLE";
   }
@@ -176,14 +198,36 @@ String callFlaskAPI(HTTPClient* http) {
   return payload; 
 }
 
+void checkServerConnection() {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("[SERVER] WiFi is not connected, skip server check.");
+    return;
+  }
+
+  HTTPClient checkClient;
+  checkClient.begin(flask_command_url);
+  int code = checkClient.GET();
+  if (code > 0) {
+    Serial.print("[SERVER] Connected to command endpoint, HTTP code: ");
+    Serial.println(code);
+  } else {
+    Serial.print("[SERVER] Failed to reach command endpoint, error: ");
+    Serial.println(code);
+  }
+  checkClient.end();
+}
+
 void forceStopAllOutputs() {
   digitalWrite(RELAY1_CONVEYOR, LOW);
   digitalWrite(RELAY2_BRANCH_SMALL, LOW);
   digitalWrite(RELAY3_BRANCH_MEDIUM, LOW);
+  digitalWrite(RELAY4_BRANCH_NON_ORANGE, LOW);
   servoSmall.write(90);
   servoMedium.write(90);
+  servoNonOrange.write(90);
   servoSmallAngle = 90;
   servoMediumAngle = 90;
+  servoNonOrangeAngle = 90;
   isServoActive = false;
 }
 
@@ -191,26 +235,42 @@ void forceStopAllOutputs() {
 
 void setup() {
   Serial.begin(115200);
-  WiFi.begin(ssid, password);
-  Serial.print("[WiFi] Connecting to ");
+  delay(300);
+
+  Serial.println("\n[BOOT] ESP32-C3 starting...");
+  Serial.print("[WIFI] Connecting to SSID: ");
   Serial.println(ssid);
+
+  WiFi.begin(ssid, password);
   while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
     Serial.print(".");
+    delay(500);
   }
+
   Serial.println();
-  Serial.print("[WiFi] Connected, IP: ");
+  Serial.println("[WIFI] Connected.");
+  Serial.print("[WIFI] IP address: ");
   Serial.println(WiFi.localIP());
+  Serial.print("[SERVER] Detect URL: ");
+  Serial.println(flask_url);
+  Serial.print("[SERVER] Hardware URL: ");
+  Serial.println(flask_hardware_url);
+  Serial.print("[SERVER] Command URL: ");
+  Serial.println(flask_command_url);
+  checkServerConnection();
   
   pinMode(RELAY1_CONVEYOR, OUTPUT);
   pinMode(RELAY2_BRANCH_SMALL, OUTPUT);
   pinMode(RELAY3_BRANCH_MEDIUM, OUTPUT);
+  pinMode(RELAY4_BRANCH_NON_ORANGE, OUTPUT);
   pinMode(SENSOR1_MAIN, INPUT_PULLUP);
   pinMode(SENSOR2_SMALL, INPUT_PULLUP);
   pinMode(SENSOR3_MEDIUM, INPUT_PULLUP);
+  pinMode(SENSOR4_NON_ORANGE, INPUT_PULLUP);
   
   servoSmall.attach(SERVO1_PIN);
   servoMedium.attach(SERVO2_PIN);
+  servoNonOrange.attach(SERVO3_NON_ORANGE_PIN);
   
   // Khởi tạo trạng thái ban đầu
   forceStopAllOutputs();
@@ -223,12 +283,10 @@ void loop() {
     String desiredState = getDesiredState(&stateClient);
 
     if (desiredState == "RUNNING" && currentState == IDLE) {
-      Serial.println("[STATE] Transition IDLE -> RUNNING");
       currentState = RUNNING;
       postHardwareStatus(&hwStatusClient); // Báo server ngay khi chuyển trạng thái
     } 
     else if (desiredState == "IDLE" && currentState != IDLE) {
-      Serial.println("[STATE] Command IDLE -> force stop & go IDLE");
       forceStopAllOutputs();
       currentState = IDLE;
       postHardwareStatus(&hwStatusClient);
@@ -255,7 +313,6 @@ void loop() {
       }
       // Edge detection: chỉ trigger khi sensor chuyển từ WAITING -> TRIGGERED
       if (sensorMainTriggered && !lastSensorMainTriggered) { 
-        Serial.println("[SENSOR] MAIN TRIGGERED -> DETECTING");
         digitalWrite(RELAY1_CONVEYOR, LOW); // Dừng băng tải
         currentState = DETECTING;
         postHardwareStatus(&hwStatusClient);
@@ -269,34 +326,32 @@ void loop() {
       {
         hasBeenDetected = true;
         String response = callFlaskAPI(&detectClient);
-        Serial.print("[DETECT] Response: ");
-        Serial.println(response);
         String category = parseCategoryFromResponse(response);
-        Serial.print("[DETECT] Category: ");
-        Serial.println(category);
         
         if (category == "SMALL") {
           currentState = SORT_SMALL;
           sensorSmallArmed = false;
           lastSensorSmallTriggered = isTriggered(SENSOR2_SMALL);
-          Serial.println("[STATE] DETECTING -> SORT_SMALL");
         }
         else if (category == "MEDIUM") {
           currentState = SORT_MEDIUM;
           sensorMediumArmed = false;
           lastSensorMediumTriggered = isTriggered(SENSOR3_MEDIUM);
-          Serial.println("[STATE] DETECTING -> SORT_MEDIUM");
+        }
+        else if (category == "NON_ORANGE") {
+          currentState = SORT_NON_ORANGE;
+          sensorNonOrangeArmed = false;
+          lastSensorNonOrangeTriggered = isTriggered(SENSOR4_NON_ORANGE);
         }
         else if (category == "LARGE") {
           currentState = SORT_LARGE;
           large_timer = millis();
-          Serial.println("[STATE] DETECTING -> SORT_LARGE");
         }
         else {
-          // Nếu response không hợp lệ, quay lại RUNNING sau 1s
-          Serial.println("[DETECT] Invalid response - waiting...");
-          currentState = NONE;
-          none_timer = millis();
+          // Không detect được gì (sau 4 lần thử), xử lý như NON_ORANGE.
+          currentState = SORT_NON_ORANGE;
+          sensorNonOrangeArmed = false;
+          lastSensorNonOrangeTriggered = isTriggered(SENSOR4_NON_ORANGE);
         }
         
         postHardwareStatus(&hwStatusClient);
@@ -326,17 +381,16 @@ void loop() {
       lastSensorSmallTriggered = sensorSmallTriggered;
       
       // Giữ servo 10s
-      if (isServoActive && (millis() - servoTimer >= 7000)) {
+      if (isServoActive && (millis() - servoTimer >= 4000)) {
          servoSmall.write(90); // Reset
          servoSmallAngle = 90;
          digitalWrite(RELAY2_BRANCH_SMALL, LOW);
          isServoActive = false;
          sensorSmallArmed = false;
          hasBeenDetected = false;
+         lastSensorMainTriggered = false;  // Reset edge detection để tránh false trigger
          currentState = RUNNING;
          postHardwareStatus(&hwStatusClient);
-         Serial.println("hasbeendetected: false");
-         Serial.println("DONE");
       }
       break;
     }
@@ -354,8 +408,8 @@ void loop() {
       
       // Servo medium chi bat dau khi sensor medium vua phat hien vat the.
       if (sensorMediumArmed && sensorMediumTriggered && !lastSensorMediumTriggered && !isServoActive) {
-         servoMedium.write(30);
-         servoMediumAngle = 30;
+         servoMedium.write(35);
+         servoMediumAngle = 35;
          servoTimer = millis();
          isServoActive = true;
          postHardwareStatus(&hwStatusClient);
@@ -364,43 +418,74 @@ void loop() {
       lastSensorMediumTriggered = sensorMediumTriggered;
       
       // Giữ servo 10s
-      if (isServoActive && (millis() - servoTimer >= 7000)) {
+      if (isServoActive && (millis() - servoTimer >= 4000)) {
          servoMedium.write(90); // Reset
          servoMediumAngle = 90;
          digitalWrite(RELAY3_BRANCH_MEDIUM, LOW);
          isServoActive = false;
          sensorMediumArmed = false;
          hasBeenDetected = false;
+         lastSensorMainTriggered = false;  // Reset edge detection để tránh false trigger
          currentState = RUNNING;
          postHardwareStatus(&hwStatusClient);
-         Serial.println("hasbeendetected: false");
-         Serial.println("DONE");
+      }
+      break;
+      }
+
+     case SORT_NON_ORANGE: {
+      digitalWrite(RELAY1_CONVEYOR, HIGH);
+      digitalWrite(RELAY4_BRANCH_NON_ORANGE, HIGH);
+      delay(30);
+      bool sensorNonOrangeTriggered = isTriggered(SENSOR4_NON_ORANGE);
+
+      // Chi arm khi sensor da tro ve WAITING.
+      if (!sensorNonOrangeArmed && !sensorNonOrangeTriggered) {
+        sensorNonOrangeArmed = true;
+      }
+
+      // Servo non orange chi bat dau khi sensor non orange vua phat hien vat the.
+      if (sensorNonOrangeArmed && sensorNonOrangeTriggered && !lastSensorNonOrangeTriggered && !isServoActive) {
+        servoNonOrange.write(30);
+        servoNonOrangeAngle = 30;
+        servoTimer = millis();
+        isServoActive = true;
+        postHardwareStatus(&hwStatusClient);
+      }
+
+      lastSensorNonOrangeTriggered = sensorNonOrangeTriggered;
+
+      if (isServoActive && (millis() - servoTimer >= 4000)) {
+        servoNonOrange.write(90);
+        servoNonOrangeAngle = 90;
+        digitalWrite(RELAY4_BRANCH_NON_ORANGE, LOW);
+        isServoActive = false;
+        sensorNonOrangeArmed = false;
+        hasBeenDetected = false;
+        lastSensorMainTriggered = false;  // Reset edge detection để tránh false trigger
+        currentState = RUNNING;
+        postHardwareStatus(&hwStatusClient);
       }
       break;
       }
 
     case SORT_LARGE:
       digitalWrite(RELAY1_CONVEYOR, HIGH);
-      if(millis() - large_timer >= 2000)
+      if(millis() - large_timer >= 5000)
       {
         currentState = RUNNING;
         hasBeenDetected = false;
-        Serial.println("hasbeendetected: false");
-        Serial.println("DONE");
+        postHardwareStatus(&hwStatusClient);
       }
-      postHardwareStatus(&hwStatusClient);
       break;
 
     default:
       digitalWrite(RELAY1_CONVEYOR, HIGH);
-      if(millis() - none_timer >= 2000)
+      if(millis() - none_timer >= 6000)
       {
         currentState = RUNNING;
         hasBeenDetected = false;
-        Serial.println("hasbeendetected: false");
-        Serial.println("DONE");
+        postHardwareStatus(&hwStatusClient);
       }
-      postHardwareStatus(&hwStatusClient);
       break;
   }
 
@@ -412,5 +497,9 @@ void loop() {
   if (currentState != SORT_MEDIUM) {
     lastSensorMediumTriggered = isTriggered(SENSOR3_MEDIUM);
     sensorMediumArmed = false;
+  }
+  if (currentState != SORT_NON_ORANGE) {
+    lastSensorNonOrangeTriggered = isTriggered(SENSOR4_NON_ORANGE);
+    sensorNonOrangeArmed = false;
   }
 }

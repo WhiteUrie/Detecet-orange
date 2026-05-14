@@ -1,102 +1,112 @@
-# Detecet-orange
+# Detect Orange - Webcam
 
-He thong phan loai cam su dung YOLOv8 + Flask + ESP32-C3.
+Hệ thống phân loại cam sử dụng YOLO (Ultralytics) để phát hiện và phân loại kích thước, kèm Web UI bằng Flask, và module ESP32 để điều khiển phần cứng (relay/servo/sensor).
 
-## Tong quan hien tai
+**Tổng quan**
+- Nguồn ảnh chính: USB webcam (OpenCV). Web UI hiển thị stream, ảnh detect gần nhất, và thống kê.
+- ESP32 chịu trách nhiệm điều khiển phần cứng và đồng bộ trạng thái với Flask server.
+- Có sketch `esp32c3/esp32c3.ino` để tham khảo cấu hình điều khiển; `esp32cam/esp32cam.ino` là sketch thử nghiệm cho ESP32-CAM.
 
-- Nguon anh detect la USB webcam tren may tinh (OpenCV).
-- ESP32-C3 chi dong vai tro dieu khien phan cung va dong bo trang thai len Flask.
-- ESP32-CAM co trong du an de test stream/capture rieng, nhung luong detect chinh dang dung webcam PC.
-- Web UI hien thi:
-1. Trang thai phan cung ESP32-C3 (relay/servo/sensor + online/offline)
-2. Camera stream realtime
-3. Anh detect gan nhat co bounding box (an label va confidence)
-4. Thong ke + nut START/STOP/RESET
+**Các file model**
+- `best.pt` (tên chung, có thể thay đổi)
+- `orange_nonorange_model_02.pt`
+- `orange_nonorange_model_50e.pt`
 
-## Cai dat
+## Yêu cầu
+- Python 3.9 – 3.12 (project có script ưu tiên Python 3.11)
+- pip
+- Arduino CLI (tuỳ chọn, chỉ cần nếu muốn tự động cài ESP32 board và thư viện via `setup.py`)
 
-Chi cai Python packages:
+## Cài đặt nhanh
+1. Cài Python packages (khuyên dùng):
 
 ```bash
 python setup.py --only-python
 ```
 
-## Chay he thong
+2. Hoặc để cả ESP32 setup (nếu có `arduino-cli`):
+
+```bash
+python setup.py
+```
+
+## Chạy ứng dụng
+- Dùng helper `start.py` để chọn môi trường Python phù hợp và cài phụ thuộc nếu cần:
 
 ```bash
 python start.py
 ```
 
-Mo trinh duyet: http://127.0.0.1:5000
-
-`start.py` se:
-- Tu chon interpreter tuong thich YOLO (Python 3.9 -> 3.12)
-- Uu tien `.venv311`, sau do `.venv`, sau do interpreter hien tai
-- Neu chua co moi truong hop le se tao `.venv311`
-- Tu cai cac goi thieu: flask, requests, numpy, opencv-python, ultralytics
-
-## Bien moi truong quan trong
-
-- `CAMERA_INDEX` (mac dinh `0`)
-- `CAMERA_WIDTH` (mac dinh `640`)
-- `CAMERA_HEIGHT` (mac dinh `480`)
-- `CAMERA_MAX_INDEX` (mac dinh `4`)
-- `AUTO_DETECT_ON_HARDWARE_UPDATE` (mac dinh `0`)
-
-Vi du doi camera index tren Windows:
+- Hoặc chạy trực tiếp (đã cài dependency):
 
 ```bash
+python app.py
+```
+
+- Mở trình duyệt vào: http://127.0.0.1:5000
+
+## Biến môi trường quan trọng
+- `CAMERA_INDEX` (mặc định `0`) — nếu có nhiều webcam, đặt index mong muốn.
+- `CAMERA_WIDTH` (mặc định `640`)
+- `CAMERA_HEIGHT` (mặc định `480`)
+- `CAMERA_MAX_INDEX` (mặc định `4`) — số index tối đa `start.py` sẽ thử.
+- `AUTO_DETECT_ON_HARDWARE_UPDATE` (`0` hoặc `1`) — nếu `1`, server sẽ chạy detect tự động khi ESP32 báo sensor edge trong `/api/hardware/update`.
+
+Ví dụ trên Windows (tạm thời cho phiên bản terminal hiện hành):
+
+```powershell
 set CAMERA_INDEX=1
 python start.py
 ```
 
-## Cong thuc do kich thuoc
-
-Thong so trong `app.py`:
+## Công thức tính kích thước
+Các thông số trong `app.py`:
 - `PIXEL_TO_CM_RATIO = 0.0237`
 - `DIAMETER_OFFSET_CM = 0`
 - `CALIBRATION_SCALE = 1.1374`
 - `CALIBRATION_OFFSET_CM = -0.476`
 
-Duong kinh duoc tinh:
+Tính toán:
+1. measured_diameter_cm = raw_diameter_px * PIXEL_TO_CM_RATIO + DIAMETER_OFFSET_CM
+2. diameter_cm = max(0, measured_diameter_cm * CALIBRATION_SCALE + CALIBRATION_OFFSET_CM)
 
-1. `measured_diameter_cm = raw_diameter_px * PIXEL_TO_CM_RATIO + DIAMETER_OFFSET_CM`
-2. `diameter_cm = max(0, measured_diameter_cm * CALIBRATION_SCALE + CALIBRATION_OFFSET_CM)`
+Ngưỡng phân loại:
+- SMALL: diameter < 6.0 cm
+- MEDIUM: 6.0 cm <= diameter < 7.0 cm
+- LARGE: diameter >= 7.0 cm
 
-Nguong phan loai:
-- SMALL: `< 6.0 cm`
-- MEDIUM: `>= 6.0 cm` va `< 7.0 cm`
-- LARGE: `>= 7.0 cm`
+`NON_ORANGE` (ví dụ class id khác hoặc tên `non_orange`) sẽ không được tính đường kính.
 
-## API Flask hien tai
+## API chính (Flask)
+- `GET /` → Dashboard (Web UI)
+- `GET /video_feed` → MJPEG stream từ webcam
+- `GET /api/detect` → Chạy 1 lần detect và trả về JSON
+- `GET /api/stats` → Trạng thái hệ thống, thống kê, hardware, last capture
+- `POST /api/control` → Gửi lệnh `START` / `STOP` / `RESET`
+- `GET /api/command` → ESP32 poll `desired_state`
+- `POST /api/hardware/update` → ESP32 gửi trạng thái relay/servo/sensor
+- `GET /api/last_capture_image` → Ảnh detect gần nhất (JPEG)
 
-- `GET /` -> giao dien dashboard
-- `GET /video_feed` -> stream MJPEG tu webcam
-- `GET /api/detect` -> detect 1 lan
-- `GET /api/stats` -> thong tin UI (counts, state, hardware, last capture)
-- `POST /api/control` -> nhan lenh START / STOP / RESET
-- `GET /api/command` -> ESP32-C3 poll `desired_state`
-- `POST /api/hardware/update` -> ESP32-C3 push relay/servo/sensor/state
-- `GET /api/last_capture_image` -> anh detect gan nhat
+## ESP32 (esp32c3/esp32c3.ino)
+- Sketch kết nối Wi‑Fi và poll `GET /api/command` mỗi ~1s.
+- Khi sensor chính (Sensor Main) phát hiện edge, ESP32 gọi `GET /api/detect` để lấy category, sau đó điều khiển relay/servo tương ứng.
+- Trong sketch, các URL Flask (cần cập nhật theo địa chỉ máy chủ của bạn):
+	- `flask_url` (detect)
+	- `flask_hardware_url` (hardware update)
+	- `flask_command_url` (command poll)
 
-## Logic ESP32-C3 hien tai (esp32c3/esp32c3.ino)
+GPIO quan trọng (theo sketch):
+- Relay conveyor: `RELAY1_CONVEYOR = 21`
+- Relay small: `RELAY2_BRANCH_SMALL = 22`
+- Relay medium: `RELAY3_BRANCH_MEDIUM = 23`
+- Relay non-orange: `RELAY4_BRANCH_NON_ORANGE = 19`
+- Sensor main: `SENSOR1_MAIN = 13` (edge detection)
+- Servo pins: `SERVO1_PIN = 25`, `SERVO2_PIN = 26`, `SERVO3_NON_ORANGE_PIN = 33`
 
-State machine:
-- `IDLE` -> cho lenh RUNNING
-- `RUNNING` -> bat relay conveyor, theo doi canh sensor main (edge detection)
-- `DETECTING` -> goi Flask `/api/detect` 1 lan
-- `SORT_SMALL` -> bat relay nhanh small + servo small (giu 7s)
-- `SORT_MEDIUM` -> bat relay nhanh medium + servo medium (giu 7s)
-- `SORT_LARGE` -> khong gat servo, cho vat di thang (delay 2s)
-- `NONE` (default case) -> detect khong hop le, cho 2s roi quay lai RUNNING
+## Ghi chú & lưu ý
+- `start.py` cố gắng sử dụng một interpreter Python tương thích (khuyến nghị Python 3.11). Nếu không tìm thấy, nó sẽ tạo `.venv311` (nếu có Python 3.11 trên hệ thống).
+- `setup.py` có thể kiểm tra vị trí sketch theo tên thư mục viết hoa (`ESP32C3`, `ESP32CAM`) — repo này dùng tên thư mục chữ thường (`esp32c3`, `esp32cam`), nên phần validate có thể báo thiếu file dù chúng tồn tại. Đây chỉ là cảnh báo không ảnh hưởng tới chạy app.
+- Nếu đổi file model (ví dụ `best.pt`), khởi động lại app để nạp model mới.
+- Nếu không mở được webcam, app sẽ thử các index từ `CAMERA_INDEX` đến `CAMERA_MAX_INDEX`.
 
-Ghi chu quan trong ve trigger:
-- Sensor main dung edge detection de tranh trigger lien tuc khi vat nam tren sensor.
-- Sau khi hoan tat moi chu ky sort (SMALL/MEDIUM/LARGE/NONE), `hasBeenDetected` duoc reset ve `false` de cho phep lan detect tiep theo.
-
-## Luu y
-
-- O khung anh detect chi hien thi bounding box, khong hien thi ten class/confidence.
-- Neu khong mo duoc webcam, app se thu lan luot tu `CAMERA_INDEX` den `CAMERA_MAX_INDEX`.
-- Sau khi thay doi model `best.pt`, can khoi dong lai app.
-- File `setup.py` hien co phan check ten thu muc sketch theo dang viet hoa (`ESP32C3`, `ESP32CAM`). Cau truc repo thuc te la viet thuong (`esp32c3`, `esp32cam`), vi vay muc validate co the bao thieu file du sketch ton tai.
+---

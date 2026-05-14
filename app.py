@@ -6,16 +6,17 @@ import atexit
 import webbrowser
 import cv2
 from ultralytics import YOLO
+from datetime import datetime
 
 app = Flask(__name__)
-model = YOLO('best.pt') # Model YOLOv8 nhận diện cam của bạn
+model = YOLO('orange_nonorange_model_04.pt') 
 
 
 @app.before_request
 def log_request_line():
     print(f"[REQ] {request.method} {request.path} from {request.remote_addr}", flush=True)
 
-ESP32_CAM_URL = "http://10.160.186.22/capture"
+ESP32_CAM_URL = "http://10.208.198.28/capture"
 PIXEL_TO_CM_RATIO = 0.0237 # Hệ số cần được bạn calibrate thực tế
 DIAMETER_OFFSET_CM = 0  # sai số
 CALIBRATION_SCALE = 1.1374
@@ -25,6 +26,11 @@ CAMERA_WIDTH = int(os.environ.get("CAMERA_WIDTH", "640"))
 CAMERA_HEIGHT = int(os.environ.get("CAMERA_HEIGHT", "480"))
 CAMERA_MAX_INDEX = int(os.environ.get("CAMERA_MAX_INDEX", "4"))
 AUTO_DETECT_ON_HARDWARE_UPDATE = os.environ.get("AUTO_DETECT_ON_HARDWARE_UPDATE", "0") == "1"
+# Tạo thư mục nondetect nếu chưa có
+NONDETECT_FOLDER = "nondetect"
+if not os.path.exists(NONDETECT_FOLDER):
+    os.makedirs(NONDETECT_FOLDER, exist_ok=True)
+
 camera_lock = threading.Lock()
 capture_image_lock = threading.Lock()
 camera = None
@@ -33,22 +39,25 @@ last_camera_open_failed_at = 0
 last_capture_image_jpeg = None
 
 # Biến đếm thống kê cho Web UI
-stats = {"small": 0, "medium": 0, "large": 0}
+stats = {"small": 0, "medium": 0, "large": 0, "non_orange": 0}
 last_capture_event = {"captured_at": 0, "category": "-", "diameter_cm": 0}
 hardware_status = {
     "relay": {
         "relay1_conveyor": "UNKNOWN",
         "relay2_small": "UNKNOWN",
         "relay3_medium": "UNKNOWN",
+        "relay4_non_orange": "UNKNOWN",
     },
     "servo": {
         "servo_small": "UNKNOWN",
         "servo_medium": "UNKNOWN",
+        "servo_non_orange": "UNKNOWN",
     },
     "sensor": {
         "sensor_main": "UNKNOWN",
         "sensor_small": "UNKNOWN",
         "sensor_medium": "UNKNOWN",
+        "sensor_non_orange": "UNKNOWN",
     },
 }
 last_hardware_update = 0
@@ -130,34 +139,46 @@ def run_detection_once():
         return {"status": "error", "message": f"Camera capture failed: {ex}"}
 
     # 1. Chạy YOLO với cấu hình chuẩn (giống hệt file test)
-    results = model(img, imgsz=320, conf=0.5, verbose=False)
+    results = model(img, conf=0.99, verbose=False)
 
-    # Nếu không có vật thể nào vượt qua ngưỡng conf=0.5
+    # Nếu không có vật thể nào vượt qua ngưỡng conf=0.9
     if len(results[0].boxes) == 0:
         last_capture_event = {"captured_at": captured_at, "category": "NONE", "diameter_cm": 0}
         return {"status": "error", "message": "No orange detected"}
 
     # 2. Lấy trực tiếp box đầu tiên 
     target_box = results[0].boxes[0].xyxy[0].tolist()
+    target_cls_raw = results[0].boxes[0].cls[0].item()
+    target_cls_id = int(target_cls_raw)
+    class_name = str(results[0].names.get(target_cls_id, "")).strip().lower()
+    normalized_class_name = class_name.replace("-", "_").replace(" ", "_")
 
-    # Tính width, height
-    width = target_box[2] - target_box[0]
-    height = target_box[3] - target_box[1]
+    # 3. Chỉ class orange mới phân loại theo kích thước, còn lại là NON_ORANGE.
+    diameter_cm = 0.0
+    category = "NON_ORANGE"
+    is_non_orange = normalized_class_name in {"non_orange", "nonorange"}
+    is_orange = (not is_non_orange) and (
+        target_cls_id == 0
+        or normalized_class_name in {"orange", "cam"}
+        or normalized_class_name.endswith("_orange")
+    )
+    if is_orange:
+        # 4. Chỉ tính kích thước cho orange.
+        width = target_box[2] - target_box[0]
+        height = target_box[3] - target_box[1]
+        raw_diameter_px = max(width, height)
+        measured_diameter_cm = (raw_diameter_px * PIXEL_TO_CM_RATIO) + DIAMETER_OFFSET_CM
+        diameter_cm = max(0, (measured_diameter_cm * CALIBRATION_SCALE) + CALIBRATION_OFFSET_CM)
 
-    # 3. Tính đường kính theo tỷ lệ pixel
-    raw_diameter_px = max(width, height)
-    measured_diameter_cm = (raw_diameter_px * PIXEL_TO_CM_RATIO) + DIAMETER_OFFSET_CM
-    diameter_cm = max(0, (measured_diameter_cm * CALIBRATION_SCALE) + CALIBRATION_OFFSET_CM)
-
-    # 4. Phân loại theo đúng ngưỡng (6.0 và 7.0)
-    category = "LARGE"
-    if diameter_cm < 6.0:
-        category = "SMALL"
-    elif diameter_cm < 7.0:
-        category = "MEDIUM"
+        category = "LARGE"
+        if diameter_cm < 6.0:
+            category = "SMALL"
+        elif diameter_cm < 7.0:
+            category = "MEDIUM"
 
     # Cập nhật thống kê
-    stats[category.lower()] += 1
+    stats_key = "non_orange" if category == "NON_ORANGE" else category.lower()
+    stats[stats_key] += 1
 
     # Lưu lại ảnh có gắn bounding box để hiển thị trên web UI.
     annotated_frame = results[0].plot(labels=False, conf=False)
@@ -180,9 +201,105 @@ def run_detection_once():
     
     return result
 
+def run_detection_with_retry(max_attempts=4):
+    """
+    Detect object with retry logic: attempt up to 4 times, save failed images to nondetect folder.
+    """
+    global stats, last_capture_event, last_capture_image_jpeg
+    
+    captured_at = int(time.time() * 1000)
+    failed_images = []
+    
+    for attempt in range(1, max_attempts + 1):
+        try:
+            img = get_image_from_cam()
+        except Exception as ex:
+            last_capture_event = {"captured_at": captured_at, "category": "ERROR", "diameter_cm": 0}
+            return {"status": "error", "message": f"Camera capture failed: {ex}"}
+        
+        failed_images.append(img.copy())
+        results = model(img, conf=0.5, verbose=False)
+        
+        # If detection successful, return result
+        if len(results[0].boxes) > 0:
+            target_box = results[0].boxes[0].xyxy[0].tolist()
+            target_cls_raw = results[0].boxes[0].cls[0].item()
+            target_cls_id = int(target_cls_raw)
+            class_name = str(results[0].names.get(target_cls_id, "")).strip().lower()
+            normalized_class_name = class_name.replace("-", "_").replace(" ", "_")
+            
+            diameter_cm = 0.0
+            category = "NON_ORANGE"
+            is_non_orange = normalized_class_name in {"non_orange", "nonorange"}
+            is_orange = (not is_non_orange) and (
+                target_cls_id == 0
+                or normalized_class_name in {"orange", "cam"}
+                or normalized_class_name.endswith("_orange")
+            )
+            if is_orange:
+                width = target_box[2] - target_box[0]
+                height = target_box[3] - target_box[1]
+                raw_diameter_px = max(width, height)
+                measured_diameter_cm = (raw_diameter_px * PIXEL_TO_CM_RATIO) + DIAMETER_OFFSET_CM
+                diameter_cm = max(0, (measured_diameter_cm * CALIBRATION_SCALE) + CALIBRATION_OFFSET_CM)
+                
+                category = "LARGE"
+                if diameter_cm < 6.0:
+                    category = "SMALL"
+                elif diameter_cm < 7.0:
+                    category = "MEDIUM"
+            
+            stats_key = "non_orange" if category == "NON_ORANGE" else category.lower()
+            stats[stats_key] += 1
+            
+            annotated_frame = results[0].plot(labels=False, conf=False)
+            ok, encoded = cv2.imencode('.jpg', annotated_frame)
+            if ok:
+                with capture_image_lock:
+                    last_capture_image_jpeg = encoded.tobytes()
+            
+            result = {
+                "status": "success",
+                "category": category,
+                "diameter_cm": round(diameter_cm, 2),
+                "attempt": attempt,
+            }
+            
+            last_capture_event = {
+                "captured_at": captured_at,
+                "category": category,
+                "diameter_cm": result["diameter_cm"],
+            }
+            
+            return result
+        
+        # No detection on this attempt, continue to next
+        if attempt < max_attempts:
+            print(f"[DETECT] No detection on attempt {attempt}/{max_attempts}, retrying...", flush=True)
+            time.sleep(0.1)
+        else:
+            # All attempts failed, save images to nondetect folder
+            print(f"[DETECT] No detection after {max_attempts} attempts, saving debug images", flush=True)
+            timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+            
+            try:
+                for idx, failed_img in enumerate(failed_images, 1):
+                    filename = f"{NONDETECT_FOLDER}/{timestamp_str}_attempt{idx}.jpg"
+                    cv2.imwrite(filename, failed_img)
+                    print(f"[DETECT] Saved: {filename}", flush=True)
+            except Exception as e:
+                print(f"[DETECT] Error saving debug images: {e}", flush=True)
+            
+            # Return NONE - ESP32 will continue conveyor motion
+            last_capture_event = {"captured_at": captured_at, "category": "NONE", "diameter_cm": 0}
+            return {"status": "success", "category": "NONE", "attempt": max_attempts}
+    
+    return {"status": "error", "message": "Detection retry loop failed"}
+
+
 @app.route('/api/detect', methods=['GET'])
 def detect_orange():
-    return jsonify(run_detection_once())
+    return jsonify(run_detection_with_retry())
 
 @app.route('/api/hardware/update', methods=['POST'])
 def update_hardware_status():
@@ -284,8 +401,18 @@ def get_stats():
     now_ms = int(time.time() * 1000)
     hardware_online = (now_ms - last_hardware_update) <= 5000 if last_hardware_update else False
 
-    # Nếu lệnh cuối là RUNNING nhưng ESP32 vẫn IDLE đủ lâu,
-    # coi như lệnh cũ đã stale và tự trả về IDLE.
+    hw_status_display = hardware_status.copy() if hardware_status else {}
+    if "sensor" in hw_status_display and isinstance(hw_status_display["sensor"], dict):
+        sensor_copy = hw_status_display["sensor"].copy()
+
+        if "sensor_small" in sensor_copy:
+            sensor_copy["sensor_small"] = "WAITING" if sensor_copy["sensor_small"] == "TRIGGERED" else "TRIGGERED"
+        if "sensor_medium" in sensor_copy:
+            sensor_copy["sensor_medium"] = "WAITING" if sensor_copy["sensor_medium"] == "TRIGGERED" else "TRIGGERED"
+        if "sensor_non_orange" in sensor_copy:
+            sensor_copy["sensor_non_orange"] = "WAITING" if sensor_copy["sensor_non_orange"] == "TRIGGERED" else "TRIGGERED"
+        hw_status_display["sensor"] = sensor_copy
+
     if (
         desired_state == "RUNNING"
         and hardware_online
@@ -313,7 +440,7 @@ def get_stats():
         "esp32_state": esp32_state,
         "counts": stats,
         "last_capture": last_capture_event,
-        "hardware_status": hardware_status,
+        "hardware_status": hw_status_display,
         "hardware_online": hardware_online,
         "hardware_last_update": last_hardware_update
     })
@@ -335,7 +462,7 @@ def control_system():
         print("[CTRL] STOP received -> desired_state=IDLE", flush=True)
     elif command == "RESET":
         # Reset toàn bộ biến đếm về 0
-        stats = {"small": 0, "medium": 0, "large": 0}
+        stats = {"small": 0, "medium": 0, "large": 0, "non_orange": 0}
         desired_state = "IDLE"
         last_control_ms = now_ms
         print("[CTRL] RESET received -> reset counts & desired_state=IDLE", flush=True)

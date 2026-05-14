@@ -59,6 +59,10 @@
                             <span>Servo Medium</span>
                             <span id="servoMediumStatus" class="font-semibold text-slate-600">IDLE</span>
                         </div>
+                        <div class="flex justify-between items-center text-sm">
+                            <span>Servo Non Orange</span>
+                            <span id="servoNonOrangeStatus" class="font-semibold text-slate-600">IDLE</span>
+                        </div>
                     </div>
 
                     <p class="text-xs font-semibold text-slate-500 mb-2">MH SENSOR (Flying Fish)</p>
@@ -75,6 +79,10 @@
                             <span>Sensor Medium</span>
                             <span id="sensorMediumStatus" class="font-semibold text-slate-600">WAITING</span>
                         </div>
+                        <div class="flex justify-between items-center text-sm">
+                            <span>Sensor Non Orange</span>
+                            <span id="sensorNonOrangeStatus" class="font-semibold text-slate-600">WAITING</span>
+                        </div>
                     </div>
 
                     <p class="text-xs font-semibold text-slate-500 mb-2">RELAY</p>
@@ -90,6 +98,10 @@
                         <div class="flex justify-between items-center text-sm">
                             <span>Relay Medium</span>
                             <span id="relay3Status" class="font-semibold text-slate-600">OFF</span>
+                        </div>
+                        <div class="flex justify-between items-center text-sm">
+                            <span>Relay Non Orange</span>
+                            <span id="relay4Status" class="font-semibold text-slate-600">OFF</span>
                         </div>
                     </div>
                 </div>
@@ -133,6 +145,10 @@
                         <div class="flex justify-between items-center p-3 bg-red-100 rounded">
                             <span class="font-medium text-red-800">Cam Nhỏ (Small)</span>
                             <span id="countSmall" class="text-2xl font-bold text-red-600">0</span>
+                        </div>
+                        <div class="flex justify-between items-center p-3 bg-slate-100 rounded">
+                            <span class="font-medium text-slate-800">Non Orange</span>
+                            <span id="countNonOrange" class="text-2xl font-bold text-slate-700">0</span>
                         </div>
                     </div>
                 </div>
@@ -192,14 +208,17 @@
 
             renderStatusValue('servoSmallStatus', hardware.servo?.servo_small || 'IDLE');
             renderStatusValue('servoMediumStatus', hardware.servo?.servo_medium || 'IDLE');
+            renderStatusValue('servoNonOrangeStatus', hardware.servo?.servo_non_orange || 'IDLE');
 
             renderStatusValue('sensorMainStatus', hardware.sensor?.sensor_main || 'WAITING');
             renderStatusValue('sensorSmallStatus', hardware.sensor?.sensor_small || 'WAITING');
             renderStatusValue('sensorMediumStatus', hardware.sensor?.sensor_medium || 'WAITING');
+            renderStatusValue('sensorNonOrangeStatus', hardware.sensor?.sensor_non_orange || 'WAITING');
 
             renderStatusValue('relay1Status', hardware.relay?.relay1_conveyor || 'OFF');
             renderStatusValue('relay2Status', hardware.relay?.relay2_small || 'OFF');
             renderStatusValue('relay3Status', hardware.relay?.relay3_medium || 'OFF');
+            renderStatusValue('relay4Status', hardware.relay?.relay4_non_orange || 'OFF');
         }
 
         function updateHardwareLiveStatus(isOnline) {
@@ -261,6 +280,7 @@
                     document.getElementById('countSmall').innerText = data.counts.small;
                     document.getElementById('countMedium').innerText = data.counts.medium;
                     document.getElementById('countLarge').innerText = data.counts.large;
+                    document.getElementById('countNonOrange').innerText = data.counts.non_orange || 0;
                     document.getElementById('systemStateDisplay').innerText = data.state;
                     updateControlButtons(data.desired_state || data.state);
                     updateHardwareStatus(data.hardware_status);
