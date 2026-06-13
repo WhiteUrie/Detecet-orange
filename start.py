@@ -104,6 +104,31 @@ def ensure_venv311() -> Path | None:
     return created
 
 
+def ensure_project_venv() -> Path | None:
+    existing = find_venv_python()
+    if existing is not None and is_compatible_for_yolo(str(existing)):
+        return existing
+
+    current_python = Path(sys.executable).resolve()
+    if not is_compatible_for_yolo(str(current_python)):
+        return None
+
+    print("[START] Creating project .venv with current compatible Python...")
+    create = subprocess.run(
+        [str(current_python), "-m", "venv", str(PROJECT_ROOT / ".venv")],
+        cwd=str(PROJECT_ROOT),
+    )
+    if create.returncode != 0:
+        print("[START] Failed to create project .venv")
+        return None
+
+    created = find_venv_python()
+    if created is None:
+        print("[START] Project .venv created but python executable not found")
+        return None
+    return created
+
+
 def missing_modules(python_exe: str) -> list[str]:
     missing: list[str] = []
     for module in REQUIRED_MODULES:
@@ -149,16 +174,25 @@ def main() -> int:
     venv311_python = find_venv311_python()
     current_python = Path(sys.executable).resolve()
 
-    # Prefer a YOLO-compatible interpreter (Python 3.9-3.12).
-    if venv311_python is not None and is_compatible_for_yolo(str(venv311_python)):
+    # Prefer a YOLO-compatible project-local environment first.
+    project_venv = ensure_project_venv()
+    if project_venv is not None:
+        python_to_use = str(project_venv)
+        print(f"[START] Using project virtual environment: {python_to_use}")
+    elif venv311_python is not None and is_compatible_for_yolo(str(venv311_python)):
         python_to_use = str(venv311_python)
         print(f"[START] Using compatible environment: {python_to_use}")
     elif venv_python is not None and is_compatible_for_yolo(str(venv_python)):
         python_to_use = str(venv_python)
         print(f"[START] Using virtual environment Python: {python_to_use}")
     elif is_compatible_for_yolo(str(current_python)):
-        python_to_use = str(current_python)
-        print(f"[START] Using current compatible Python: {python_to_use}")
+        project_venv = ensure_project_venv()
+        if project_venv is None:
+            python_to_use = str(current_python)
+            print(f"[START] Using current compatible Python: {python_to_use}")
+        else:
+            python_to_use = str(project_venv)
+            print(f"[START] Using project virtual environment: {python_to_use}")
     else:
         created = ensure_venv311()
         if created is None:

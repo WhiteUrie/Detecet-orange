@@ -5,6 +5,7 @@ import time
 import atexit
 import webbrowser
 import cv2
+import numpy as np
 from ultralytics import YOLO
 from datetime import datetime
 
@@ -17,13 +18,18 @@ def log_request_line():
     print(f"[REQ] {request.method} {request.path} from {request.remote_addr}", flush=True)
 
 ESP32_CAM_URL = "http://10.208.198.28/capture"
-PIXEL_TO_CM_RATIO = 0.0237 # Hệ số cần được bạn calibrate thực tế
-DIAMETER_OFFSET_CM = 0  # sai số
-CALIBRATION_SCALE = 1.1374
-CALIBRATION_OFFSET_CM = -0.476
+PIXEL_TO_CM_RATIO = 0.0237 
+DIAMETER_OFFSET_CM = 0  
+CALIBRATION_SCALE = 0.9886
+CALIBRATION_OFFSET_CM = 0.7368
+A = 0.0000373307
+B = -0.0031015816
+C = 1.046601
 CAMERA_INDEX = int(os.environ.get("CAMERA_INDEX", "0"))
 CAMERA_WIDTH = int(os.environ.get("CAMERA_WIDTH", "640"))
 CAMERA_HEIGHT = int(os.environ.get("CAMERA_HEIGHT", "480"))
+X_C = CAMERA_WIDTH / 2  
+Y_C = CAMERA_HEIGHT / 2
 CAMERA_MAX_INDEX = int(os.environ.get("CAMERA_MAX_INDEX", "4"))
 AUTO_DETECT_ON_HARDWARE_UPDATE = os.environ.get("AUTO_DETECT_ON_HARDWARE_UPDATE", "0") == "1"
 # Tạo thư mục nondetect nếu chưa có
@@ -167,13 +173,18 @@ def run_detection_once():
         width = target_box[2] - target_box[0]
         height = target_box[3] - target_box[1]
         raw_diameter_px = max(width, height)
+        x_b = target_box[0] + width / 2
+        y_b = target_box[1] + height / 2
+        r = np.sqrt((x_b - X_C)**2 + (y_b - Y_C)**2)
+        k_linear = np.sqrt((A * (r**2) + B * r + C) / C)
+        raw_diameter_px = raw_diameter_px * k_linear
         measured_diameter_cm = (raw_diameter_px * PIXEL_TO_CM_RATIO) + DIAMETER_OFFSET_CM
         diameter_cm = max(0, (measured_diameter_cm * CALIBRATION_SCALE) + CALIBRATION_OFFSET_CM)
 
         category = "LARGE"
-        if diameter_cm < 6.0:
+        if diameter_cm < 5.5:
             category = "SMALL"
-        elif diameter_cm < 7.0:
+        elif diameter_cm < 6.5:
             category = "MEDIUM"
 
     # Cập nhật thống kê
@@ -244,9 +255,9 @@ def run_detection_with_retry(max_attempts=4):
                 diameter_cm = max(0, (measured_diameter_cm * CALIBRATION_SCALE) + CALIBRATION_OFFSET_CM)
                 
                 category = "LARGE"
-                if diameter_cm < 6.0:
+                if diameter_cm < 5.5:
                     category = "SMALL"
-                elif diameter_cm < 7.0:
+                elif diameter_cm < 6.5:
                     category = "MEDIUM"
             
             stats_key = "non_orange" if category == "NON_ORANGE" else category.lower()

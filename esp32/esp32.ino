@@ -3,30 +3,30 @@
 #include <ESP32Servo.h>
 #include <ArduinoJson.h>
 
-const char* ssid = "TipToe";
-const char* password = "1234567890dcq";
-String flask_url = "http://10.177.46.160:5000/api/detect";
-String flask_hardware_url = "http://10.177.46.160:5000/api/hardware/update";
-String flask_command_url = "http://10.177.46.160:5000/api/command";
+const char* ssid = "Wifi Thu Nghiem";
+const char* password = "daubepgioi";
+String flask_url = "http://192.168.1.49:5000/api/detect";
+String flask_hardware_url = "http://192.168.1.49:5000/api/hardware/update";
+String flask_command_url = "http://192.168.1.49:5000/api/command";
 
 HTTPClient hwStatusClient;
 HTTPClient stateClient;
 HTTPClient detectClient;
 
 // Khai báo chân GPIO
-const int RELAY1_CONVEYOR = 23;
-const int RELAY2_BRANCH_SMALL = 22;
-const int RELAY3_BRANCH_MEDIUM = 17;
 const int RELAY4_BRANCH_NON_ORANGE = 19;
+const int RELAY1_CONVEYOR = 17;
+const int RELAY2_BRANCH_SMALL = 22;
+const int RELAY3_BRANCH_MEDIUM = 23;
 
+const int SENSOR4_NON_ORANGE = 13; 
 const int SENSOR1_MAIN = 18;
 const int SENSOR2_SMALL = 14;
 const int SENSOR3_MEDIUM = 26;
-const int SENSOR4_NON_ORANGE = 13; 
 
-const int SERVO1_PIN = 21;
+const int SERVO3_NON_ORANGE_PIN = 21;
+const int SERVO1_PIN = 25;
 const int SERVO2_PIN = 16;
-const int SERVO3_NON_ORANGE_PIN = 25;
 
 Servo servoSmall;
 Servo servoMedium;
@@ -42,6 +42,8 @@ bool hasBeenDetected = false;
 bool sensorMainTriggered = false;
 unsigned long large_timer = 0;
 unsigned long none_timer = 0;
+unsigned long detectDelayStartMs = 0;
+const unsigned long DETECT_AFTER_RELAY_OFF_MS = 30;
 
 // Theo doi canh trigger de tranh kich servo lap lai trong cung 1 lan vat di qua sensor.
 bool lastSensorSmallTriggered = false;
@@ -314,6 +316,7 @@ void loop() {
       // Edge detection: chỉ trigger khi sensor chuyển từ WAITING -> TRIGGERED
       if (sensorMainTriggered && !lastSensorMainTriggered) { 
         digitalWrite(RELAY1_CONVEYOR, LOW); // Dừng băng tải
+        detectDelayStartMs = millis();
         currentState = DETECTING;
         postHardwareStatus(&hwStatusClient);
       }
@@ -324,6 +327,11 @@ void loop() {
 
     case DETECTING:
       {
+        // Chờ ngắn sau khi relay băng tải tắt để vật thể ổn định trước khi chụp.
+        if (millis() - detectDelayStartMs < DETECT_AFTER_RELAY_OFF_MS) {
+          break;
+        }
+
         hasBeenDetected = true;
         String response = callFlaskAPI(&detectClient);
         String category = parseCategoryFromResponse(response);
