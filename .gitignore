@@ -10,3 +10,28 @@ env/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Images and datasets
+nondetect/
+*.jpg
+*.jpeg
+*.png
+*.bmp
+*.gif
+
+# Model weights and large binaries
+*.pt
+*.pth
+*.h5
+*.ckpt
+*.onnx
+best.pt
+orange_nonorange_model_*.pt
+
+# Logs and env
+*.log
+.env
+
+# Project folders
+models/
+data/
